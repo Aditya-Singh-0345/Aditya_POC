@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gaze Detection from Video</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+    }
+    #upload-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 2;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 10px;
+      border-radius: 8px;
+    }
+    video, canvas {
+      display: block;
+      margin: 0 auto;
+      margin-top: 60px;
+    }
+    table {
+      border-collapse: collapse;
+      margin-top: 20px;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: center;
+    }
+    img {
+      max-width: 120px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="upload-container">
+    <input type="file" id="videoUpload" accept="video/*">
+    <button id="downloadCSV">Download CSV</button>
+  </div>
+
+  <video id="video" width="640" height="480" crossorigin="anonymous" controls></video>
+  <canvas id="output" width="640" height="480"></canvas>
+
+  <table id="resultTable">
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>Image</th>
+        <th>Gaze</th>
+        <th>Delta</th>
+        <th>Canvas</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+  <script>
+    const videoUpload = document.getElementById('videoUpload');
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('output');
+    const ctx = canvas.getContext('2d');
+    const tableBody = document.querySelector('#resultTable tbody');
+    const downloadBtn = document.getElementById('downloadCSV');
+
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    function getDistance(p1, p2) {
+      const dx = (p1.x - p2.x) * canvas.width;
+      const dy = (p1.y - p2.y) * canvas.height;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function averageDistance(center, indices, landmarks) {
+      return indices.reduce((sum, i) => sum + getDistance(center, landmarks[i]), 0) / indices.length;
+    }
+
+    function detectGaze(landmarks) {
+      const center = landmarks[468]; // Left eye iris center
+      const leftIndices = [133, 173, 154, 155];
+      const rightIndices = [33, 7, 161, 246];
+
+      const avgLeft = averageDistance(center, leftIndices, landmarks);
+      const avgRight = averageDistance(center, rightIndices, landmarks);
+      const delta = avgRight - avgLeft;
+
+      let gaze = 'Center';
+      if (delta > 4) gaze = 'Looking Left';
+      else if (delta < -4) gaze = 'Looking Right';
+
+      return { gaze, delta, center, leftIndices, rightIndices };
+    }
+
+    faceMesh.onResults(async (results) => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+      if (results.multiFaceLandmarks.length > 0) {
+        const landmarks = results.multiFaceLandmarks[0];
+        const { gaze, delta, center, leftIndices, rightIndices } = detectGaze(landmarks);
+
+        const cx = center.x * canvas.width;
+        const cy = center.y * canvas.height;
+
+        ctx.fillStyle = 'blue';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+        ctx.fill();
+
+        ctx.strokeStyle = 'green';
+        [...leftIndices, ...rightIndices].forEach(i => {
+          const x = landmarks[i].x * canvas.width;
+          const y = landmarks[i].y * canvas.height;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+        });
+
+        ctx.strokeStyle = 'red';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 20);
+        ctx.lineTo(cx, cy + 20);
+        ctx.stroke();
+
+        ctx.fillStyle = 'lime';
+        ctx.font = '20px Arial';
+        ctx.fillText(`Gaze: ${gaze}`, 10, 30);
+        ctx.fillText(`Δ: ${delta.toFixed(2)} px`, 10, 55);
+
+        addToTable(video.currentTime.toFixed(2), canvas, gaze, delta.toFixed(2));
+      }
+    });
+
+    function addToTable(time, canvas, gaze, delta) {
+      const row = document.createElement('tr');
+
+      const timeCell = document.createElement('td');
+      timeCell.textContent = `${time}s`;
+      row.appendChild(timeCell);
+
+      const snapshot = document.createElement('canvas');
+      snapshot.width = canvas.width;
+      snapshot.height = canvas.height;
+      snapshot.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imgCell = document.createElement('td');
+      const img = new Image();
+      img.src = snapshot.toDataURL('image/png');
+      imgCell.appendChild(img);
+      row.appendChild(imgCell);
+
+      const gazeCell = document.createElement('td');
+      gazeCell.textContent = gaze;
+      row.appendChild(gazeCell);
+
+      const deltaCell = document.createElement('td');
+      deltaCell.textContent = delta;
+      row.appendChild(deltaCell);
+
+      const canvasCell = document.createElement('td');
+      const canvasCopy = document.createElement('canvas');
+      canvasCopy.width = canvas.width;
+      canvasCopy.height = canvas.height;
+      canvasCopy.getContext('2d').drawImage(canvas, 0, 0);
+      const canvasImg = new Image();
+      canvasImg.src = canvasCopy.toDataURL('image/png');
+      canvasCell.appendChild(canvasImg);
+      row.appendChild(canvasCell);
+
+      tableBody.appendChild(row);
+    }
+
+    videoUpload.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const url = URL.createObjectURL(file);
+      video.src = url;
+
+      video.onloadeddata = () => {
+        video.currentTime = 0;
+      };
+    });
+
+    let analyzing = false;
+    let analysisInterval;
+
+    function analyzeFrame() {
+      if (!analyzing || video.paused || video.ended) return;
+      faceMesh.send({ image: video });
+    }
+
+    video.addEventListener('play', () => {
+      analyzing = true;
+      if (analysisInterval) clearInterval(analysisInterval);
+      analysisInterval = setInterval(() => {
+        if (!video.paused && !video.ended) {
+          analyzeFrame();
+        }
+      }, 1000);
+    });
+
+    video.addEventListener('pause', () => {
+      analyzing = false;
+      clearInterval(analysisInterval);
+    });
+
+    video.addEventListener('ended', () => {
+      analyzing = false;
+      clearInterval(analysisInterval);
+    });
+
+    video.addEventListener('seeked', () => {
+      if (!video.paused && !video.ended) {
+        analyzeFrame(); // Analyze immediately on seek
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      let csv = 'Timestamp,Gaze,Delta\n';
+      document.querySelectorAll('#resultTable tbody tr').forEach(row => {
+        const cells = row.querySelectorAll('td');
+        const time = cells[0].textContent;
+        const gaze = cells[2].textContent;
+        const delta = cells[3].textContent;
+        csv += `${time},${gaze},${delta}\n`;
+      });
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'gaze_results.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+  </script>
+</body>
+</html>
+
